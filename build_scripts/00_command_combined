@@ -1,0 +1,965 @@
+# series of commands used to build and run a qemu virtual machine running GeoMxNGSPipeline service as well as the client process that creates DCC files from sequenced transcript barcodes in fastq files
+# key successes in this process marked by ### SUCCESS
+
+# 20241030 start by downloading docker into singularity
+module spider apptainer
+module spider singularity
+
+vi Singularity
+
+!salloc
+!srun
+module load singularity/4.1.0
+singularity --verbose build qemu.sif Singularity # fails. no proot
+singularity --verbose build --fakeroot qemu.sif Singularity # fails. no fakeroot
+# can't use a def file to build. try downloading instead.
+singularity --verbose build qemu.sif docker://qemux/qemu-docker:6.06 ### SUCCESS building qemu singularity image w/o root
+singularity run qemu.sif # must be executed with root privs
+singularity run --bind $HOME:$HOME:rw,$(pwd):$(pwd):rw,/run,$SYS_SCRATCH:$SYS_SCRATCH:rw --pwd $(pwd) --home $HOME --env DISPLAY=$DISPLAY qemu.sif # FATAL tini (2212554)] exec /run/entry.sh failed: No such file or directory
+
+# try using to create a 5G file in home dir
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f qcow2 $HOME/myVirtualDisk.qcow2 5G # worked
+rm ~/myVirtualDisk.qcow2
+
+# redo with a 20G file in current dir
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f vdi $SYS_SCRATCH/users/$USER/qemu_dock_sing/test.vdi 20G # worked
+rm test.vdi
+
+# qemu also can use vdi files. copy ubuntu 20.04 vdi here.
+# from https://www.baeldung.com/linux/qemu-from-terminal, run
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+-device virtio-net-pci,netdev=net0 & # gets a vnc server running on 127.0.0.1
+
+# add in forwarding to a ssh port on the device.
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9,hostfwd=tcp::44788-:22  \
+-device virtio-net-pci,netdev=net0 & # gets a vnc server running on 127.0.0.1 but no response to ssh geomx@127.0.0.1 -p 44788
+
+
+# some further manglings
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::44788-:22 \
+-display none &
+
+ssh geomx@localhost -p 44788
+
+# device stuff from https://unix.stackexchange.com/questions/124681/how-to-ssh-from-host-to-guest-using-qemu
+#-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+#-device virtio-net-pci,netdev=net0 \
+#-nographic \
+
+# don't boot first cd device with a distro iso
+#-boot d                                                        \
+#-cdrom linuxmint-21.1-cinnamon-64bit.iso                       \
+
+# remove -vga due to qemu-system-x86_64: QXL VGA not available. Perhaps you want to install qemu-system-modules-spice package?
+# this vdi was a server, after all
+#-vga qxl                                                       \
+
+# do not enablew kvm due to Could not access KVM kernel module: No such file or directory
+#-enable-kvm                                                    \
+
+# lost os errors due to missing sound card. remove
+#-device AC97                                                   \
+
+# with -nographic, get a console that says it's booting, but no further
+# then it apparently freezes
+# rather than ubuntu, it seems to be SeaBIOS (version 1.16.3-debian-1.16.3-2)
+
+
+# back to basics. get a bash console on the singularity image (the host): Q: does a process running on the singularity image access all the ports of the machine, or only those of the singularity image? Do I need more singularity ooptions?
+
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif bash
+Singularity> /usr/bin/qemu-system-x86_64 --help
+
+During emulation, the following keys are useful:
+ctrl-alt-f      toggle full screen
+ctrl-alt-n      switch to virtual console 'n'
+ctrl-alt-g      toggle mouse and keyboard grab
+
+# idea: get Ubuntu 20.04 LTS desktop image.
+
+wget https://releases.ubuntu.com/focal/ubuntu-20.04.6-desktop-amd64.iso
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif \
+qemu-img create -f qcow2 ubuntu_2004_geomx.qcow2 20G
+
+singularity exec --env DISPLAY=$DISPLAY --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif \
+qemu-system-x86_64 \
+-vga std \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.qcow2                                   \
+-boot d                                                        \
+-cdrom ubuntu-20.04.6-desktop-amd64.iso                        \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+-device virtio-net-pci,netdev=net0
+
+#-vga qxl \ qemu-system-x86_64: QXL VGA not available. Perhaps you want to install qemu-system-modules-spice package?
+#-enable-kvm  \ Could not access KVM kernel module: No such file or directory qemu-system-x86_64: failed to initialize kvm: No such file or directory
+#-device AC97 # error initialising sound
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 --help | less
+
+# doing the above with -vga std only runs a vnc server even under MobaXterm (which has a good X server)
+# is this a problem with using this qemu from a docker image? Would this work on a linux machine with admin access?
+
+
+# 20241031 - using qemu v2.11.1 on ubuntu 18.04 lts
+# MOVING VIRT CREATION TO UBUNTU 18.04 LTS LAPTOP WITH ADMIN PRIVILEGES ### SUCCESS (eventually)
+
+qemu-system-x86_64 -m 10G -smp 2 \
+-hda ../vboxvm/ubuntu_2004_geomx/ubuntu_2004_geomx.vdi \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9,hostfwd=tcp:127.0.0.1:10022-:22 \
+-device virtio-net-pci,netdev=net0 -vga qxl
+# ok, but no evidence that port forwarding worked
+
+qemu-system-x86_64 -m 10G -smp 2 \
+-hda ../vboxvm/ubuntu_2004_geomx/ubuntu_2004_geomx.vdi \
+-vga qxl \
+-net nic,model=virtio,name=net0 \
+-net user,hostfwd=tcp::10022-:22 \
+-fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none \
+-device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# fsdev and following line are for sharing a folder on host with virt
+-device virtio-net-pci,netdev=net0 \
+
+
+
+qemu-system-x86_64 -net nic,model=help # get list of models for the guest that are compatible with hardware
+# qemu: Supported NIC models: ne2k_pci,i82551,i82557b,i82559er,rtl8139,e1000,pcnet,virtio,sungem
+
+name=net0
+
+
+# not avail: -enable-kvm \
+# very slow: -hda ../vboxvm/ubuntu_geomx/ubuntu_geomx.vdi \ # use of a virtualbox formatted image is slow
+# much faster and interactive with server
+# not used: -device AC97
+# hostfwd part of netdev command to do host forwarding
+forwarding doesnt seem to be working; ssh works within the vm tho.
+orig form: hostfwd=tcp::10022-:22
+
+
+# from internet (using much later version of qemu)
+qemu-system-x86_64 \
+-enable-kvm                                                    \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda myVirtualDisk.qcow2                                       \
+-boot d                                                        \
+-cdrom linuxmint-21.1-cinnamon-64bit.iso                       \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+-device virtio-net-pci,netdev=net0                             \
+-vga qxl                                                       \
+-device AC97
+
+
+# try starting over, building a ubuntu desktop image
+# create file
+qemu-img create -f qcow2 ./ubuntu_2004_geomx.qcow2 20G
+# start a machine
+qemu-system-x86_64 -m 10G -smp 2 \
+-hda ./ubuntu_2004_geomx.qcow2 \
+-boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-desktop-amd64.iso \
+-net nic,model=virtio,name=net0 \
+-net user,hostfwd=tcp::10022-:22 \
+-fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none \
+-device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+
+#-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+#-device virtio-net-pci,netdev=net0                             \
+#-vga qxl                                                       \
+#-device AC97
+
+
+
+
+
+
+
+# 20241111-12 using installed QEMU 2.11 initially without kvm acceleration
+qemu-img create -f qcow2 ./ubuntu_2004_geomx.qcow2 20G
+# try with 10g mem, 2 processors, no kvm, boot from cdrom (d), with desktop iso in cd tray
+qemu-system-x86_64 -m 10G -smp 2 -hda ./ubuntu_2004_geomx.qcow2 -boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-desktop-amd64.iso -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# try now with 20G mem
+qemu-system-x86_64 -m 20G -smp 2 -hda ./ubuntu_2004_geomx.qcow2 -boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-desktop-amd64.iso -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# now also with 6 processors
+qemu-system-x86_64 -m 20G -smp 6 -hda ./ubuntu_2004_geomx.qcow2 -boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-desktop-amd64.iso -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# now also accel with kvm, but this needs sudo
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ubuntu_2004_geomx.qcow2 -boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-desktop-amd64.iso -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi
+# installation ok, remove cd and reboot from hard disk (c) with kvm
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ubuntu_2004_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi
+# and now again without kvm
+qemu-system-x86_64 -m 20G -smp 6 -hda ./ubuntu_2004_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# without kvm, no need for admin privs. Quite a bit slower, but successful.
+# To test - without kvm does the shared folder mount? Can bootup and mounting of shared folder be automated? Can a process then wait for result? Can QEMU be run without kvm from a docker image?
+# is it important to login to the virt using ssh?
+
+# 20241112 goal to load vm without accelerators, mount host dir
+# on virt terminal (from https://dev.to/franzwong/mount-share-folder-in-qemu-with-same-permission-as-host-2980):
+mkdir -p /mnt/shared
+sudo mount -t 9p host_share /mnt/shared # success! shared files visible/accessible
+# turned off screen lock, created file in out dir
+echo "boo" > /mnt/shared/out/boo.txt # file found with my user permissions in ~/geomx/out
+sudo umount /mnt/shared
+
+# next goal, create a .profile script that mounts this 
+# while mounted, mtab had following entry, copied over to fstab
+host_share /mnt/shared 9p rw,sync,dirsync,relatime,access=client,trans=virtio 0 0
+# with this added to /etc/fstab, the following command mounts this drive
+sudo mount -a # can't do this without sudo, though
+# want this user-mountable
+# setting uid=1000,gid=1000,umask=777 did not allow mount -a or mount /mnt/shared
+# try adding geomx to list of users who can mount /mnt/shared
+sudo setfacl -d -m g:geomx:7 /mnt/shared # was this necessary?
+# perhaps uid,gid,umask not necessary? removed these from /etc/fstab before rebooting
+
+# put mount script in /etc/profile.d:
+sudo vi /etc/profile.d/mount_host_shared.sh
+mount -t 9p host_share /mnt/shared # added this as only line in the file
+# shut down and restarted - mount failed
+sudo rm /etc/profile.d/mount_host_shared.sh
+
+# solution: added user option in /etc/fstab to allow normal user to mount
+host_share /mnt/shared 9p rw,user,sync,dirsync,relatime,access=client,trans=virtio 0 0
+# now can mount and dismount as user
+
+# added to ~/.profile
+mount /mnt/shared
+date -Ins > /mnt/shared/out/output.txt
+# shut down and restarted as user (no accelerator); date.txt appeared about 4 mins before desktop showed
+
+# installed nanostring pipeline and added netstat call to ~/.pipeline
+# moved nanostring pipeline file into /mnt/shared/in
+# on host:
+mv ../Downloads/GeoMxNGSPipeline_Linux_3.1.1.8.zip ~/geomx/in
+(cd ~/geomx/in && unzip *.zip)
+ls -l ~/geomx/in
+
+# on virt, need to be able to check listening services
+sudo apt install net-tools # to check if listening on port 5000
+
+# on virt, installation from /mnt/shared/in fails, copy files to home in virt
+cp -a /mnt/shared/in/*.sh /mnt/shared/in/*.tgz .
+sudo ./GeoMxNGSPipeline_Linux_3.1.1.8.sh # accepted port 5000
+sudo netstat -tulpn # shows named GeoMxNGSPipeli... service running
+netstat -tulpn # shows unnamed process listening to port 5000
+vi /var/GeoMxNGSPipeline/runtimesettings.xml # add folder mapping "in"
+# added: <folder path="/mnt/shared/in" name="in"/>
+vi ~/.profile
+# added: netstat -tulpn >> /mnt/shared/out/output.txt
+# added: export PATH=$PATH:/var/GeoMxNGSPipeline
+# added: geomxngspipeline >> /mnt/shared/out/output.out
+# last line was to run the pipeline
+
+# starting this gave an error in processing .profile, but no detail, and outputs as expected
+# some success thus far, not clear why the failure
+
+
+# next goal. build a server with same capabilities, still on Ubuntu 18.04 LTS machine with admin privileges. ### SUCCESS (eventually)
+# create file
+qemu-img create -f qcow2 ./ub2004svr_geomx.qcow2 20G ### SUCCESS
+# build machine using sudo to accel with kvm
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot d -cdrom ../Downloads/ubuntu_20.04/ubuntu-20.04.6-live-server-amd64.iso -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi ### SUCCESS
+
+# 20241113 start machine and try logging in by ssh - not crucial but handy
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi ### SUCCESS
+# on virt, ip address at bootup is 10.0.2.15. Can we ssh there? Can host see this?
+# is virt listening on port 22? on virt:
+sudo apt install net-tools
+sudo netstat -tulpn # shows listening on 0.0.0.0:22
+# need nmap on host for port scanning.
+nmap -sn 192.168.1.0/24 # Host is 192.168.1.129, found by nmap
+nmap -sn 10.0.2.0/24 # virt not found, not responding to ping requests
+# try logging in
+ssh geomx@10.0.2.15 # unsucessful
+# better, port scan before and after starting virt. Method only useful on laptop. 3 hosts before. 4 after (new one: 192.168.1.78)
+ssh geomx@192.168.1.78 # connection refused. Firewall problem?
+# on virt:
+sudo ufw status # inactive!
+# on host, also inactive!
+# on host:
+nmap 192.168.1.0/24 # gives a report of what ports are open on each ip. 192.168.1.78 has all ports closed, although (from virt) sshd running and listening on 22
+# on virt: sudo ufw allow 22; sudo ufw status
+# after that, nmap still shows no ports open on the virt; ufw status still shows inactive on the virt
+# on virt, 'sudo ufw enable' shows it running and allowing incoming connections on 22, but nmap on host still shows no ports open
+# on virt, turned off ufw, purged and reinstalled openssh-server, still no port open.
+# recall port forwarding from host port 10022 was on(!)
+# on host:
+ssh -p 10022 geomx@127.0.0.1 ### SUCCESS sshing in using port 10022 on the host
+# on virt:
+shutdown -h now
+
+# restart virt without port forwarding
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi
+# on host:
+nmap 192.168.1.0/24 # no ports showing open on 192.168.1.78 perhaps needs an option specified to qemu?
+# from https://www.baeldung.com/linux/qemu-ssh-host-guest ssh to virt requires setup of bridge from virt to the network.
+# SIMPLEST TO USE PORT FORWARDING AS ABOVE
+
+# restart virt with port forwarding & test no display '-display none'
+sudo qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -accel accel=kvm,thread=multi -display none ### SUCCESS running headless
+# on host:
+nmap 192.168.1.0/24 # 4 hosts up including virt
+ssh -p 10022 geomx@127.0.0.1 ### SUCCESS logging into headless machine
+
+# while virt up & ssh-connected, set server to auto-login (see https://ostechnix.com/ubuntu-automatic-login/)
+# autologin ensures user's .profile script is run - good mechanism for running the pipeline.
+# on virt:
+sudo vi /etc/systemd/logind.conf
+# uncommented: NAutoVTs=1 # allocates 1 tty
+# uncommented: ReserveVT=1 # unconditionally reserve tty1
+sudo mkdir /etc/systemd/system/getty@tty1.service.d/ # make a dir to indicate autologin to systemd
+sudo vi /etc/systemd/system/getty@tty1.service.d/override.conf
+# added 4 lines: 1) service 2) command to run [none, reset list of commands] 3) command to run [agetty opens a tty port, invokes /bin/login; noissue prevents display of /etc/issue before prompt] 4) wait till system is idle to start the service
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --noissue --autologin geomx %I $TERM
+Type=idle
+# not sure why the '-' before the agetty command. From https://unix.stackexchange.com/questions/213192/what-does-it-mean-to-have-a-minus-sign-as-the-first-character-of-a-command-in-ht it indicates a login shell
+
+# while virt up & ssh-connected, install pipeline and make it work
+# create and enable mounting of the shared folder by user
+sudo mkdir /mnt/shared
+sudo vi /etc/fstab
+# added: host_share /mnt/shared 9p rw,user,sync,dirsync,relatime,access=client,trans=virtio 0 0
+# note, 'user' allows user to mount and unmount
+mount /mnt/shared
+ls /mnt/shared/*
+umount /mnt/shared # all 3 successful ### SUCCESS configuring headless machine as above. note that virt does not have GeoMxNGSPipeline installed yet
+
+# installed nanostring pipeline and added netstat call to ~/.pipeline
+# moved nanostring pipeline file into /mnt/shared/in
+# on host:
+mv ../Downloads/GeoMxNGSPipeline_Linux_3.1.1.8.zip ~/geomx/in
+(cd ~/geomx/in && unzip *.zip && ls -l)
+ls -l ~/geomx/in
+
+# on virt, installation from /mnt/shared/in fails, copy files to home in virt
+mount /mnt/shared
+cp -a /mnt/shared/in/*.sh /mnt/shared/in/*.tgz .
+sudo ./GeoMxNGSPipeline_Linux_3.1.1.8.sh # accepted port 5000
+rm GeoMxNGSPipeline* # remove source files
+sudo netstat -tulpn # shows named GeoMxNGSPipeli... service running
+netstat -tulpn # shows unnamed process listening to port 5000
+sudo vi /var/GeoMxNGSPipeline/runtimesettings.xml # add folder mapping "in"
+# added: <folder path="/mnt/shared/in" name="in"/>
+# test run of pipeline program
+export PATH=$PATH:/var/GeoMxNGSPipeline
+geomxngspipeline # scroll down and accept EULA
+geomxngspipeline >> /mnt/shared/out/output.out
+
+# next goal, create a .profile script that mounts the shared dir and outputs some things 
+vi ~/.profile
+# added: mount /mnt/shared
+# added: date -Ins > /mnt/shared/out/output.txt
+# added: netstat -tulpn >> /mnt/shared/out/output.txt
+# added: export PATH=$PATH:/var/GeoMxNGSPipeline
+# added: geomxngspipeline >> /mnt/shared/out/output.txt
+# added: # pipeline_script.sh could include a shutdown command
+# added: if [[ -d /mnt/shared/fastq ]]; then
+# added:   bash pipeline_script.sh
+# added: fi
+vi pipeline_script.sh
+# added: #!/bin/bash
+# added: echo 'hello from inside pipeline_script.sh' > /mnt/shared/out/hello.txt 
+# added: shutdown -h now # if pipeline script runs, auto shutdown
+# give this script root powers (dangerous in most instances!)
+chmod a-w pipeline_script.sh
+sudo chown root pipeline_script.sh
+sudo chmod u+s pipeline_script.sh
+# shut down and restarted as user (no accelerator); date.txt appeared about 4 mins before desktop showed
+# tried & failed to run pipeline script from virt cli - complaints of lack of interactive authentication or request for password
+# demote to an ordinary script
+sudo chmod u-s pipeline_script.sh
+sudo chmod u+w pipeline_script.sh
+sudo chown geomx:geomx pipeline_script.sh
+# note, in he final case, after pipeline runs, we will touch a file to indicate we're done, and then scancel the job.
+printf 'geomx' | sudo systemctl poweroff --no-wall # success at cli
+# tried a second time & failed.
+
+
+# create expected dir
+mkdir ../geomx/fastq
+
+# start virt w/o accel and see if hello.txt appears, triggered by presence of fastq dir
+qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none
+# hello.txt appears as expected.
+# shutdown was not automatic. happened only on ssh login, and authentication was rqd before it happened.
+# BIGGER PROBLEM: pipeline not listening yet on port 5000 when .profile was executed - visible in outputs. need some way to test and delay.
+
+rmdir ~/geomx/fastq # absent this, pipeline script won't run
+
+# start virt w/o accel and see if hello.txt appears, triggered by presence of fastq dir
+qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none
+# on virt:
+vi pipeline_script.sh
+# added: # wait till geomx pipeline service is listening on port 5000
+# added: tmp=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+# added: while [ "$tmp" == 0 ] ; do
+# added:   echo 'no listening on port 5000, waiting 2s' >> /mnt/shared/out/hello.txt
+# added:   sleep 2
+# added:   tmp=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+# added: done
+# added: netstat -tuln >> /mnt/shared/out/hello.txt
+# added: mkdir -p /mnt/shared/out
+# added: if [ -f /mnt/shared/in/project.ini ] ; then
+# added:   geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/in/project.ini
+# added: else
+# added:   echo "ERROR: missing project.ini file" > /mnt/shared/out/error.txt
+# added: fi
+#
+# to run pipeline, user should provide to the main bash pipeline script 1) the location of the project.ini file and 2) the full path of a dir named 'fastq' in which the fastq files are found.
+# main bash script will create a dir named 'in' beside the fastq dir and symlink project.ini to the ini file specified.
+
+### contents of pipeline_script.sh:
+
+#!/bin/bash
+
+echo 'hello from inside pipeline_script.sh' > /mnt/shared/out/hello.txt
+
+# wait till geomx pipeline service is listening on port 5000
+tmp=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+while [ "$tmp" == 0 ] ; do
+  echo 'no listening on port 5000, waiting 2s' >> /mnt/shared/out/hello.txt
+  sleep 2
+  tmp=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+done
+netstat -tuln >> /mnt/shared/out/hello.txt
+
+# needed: a 'fastq' dir, an 'out' dir and an 'in' dir with a file called project.ini
+mkdir -p /mnt/shared/out
+if [ -f /mnt/shared/in/project.ini ] ; then
+  geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/in/project.ini
+else
+  echo "ERROR: missing project.ini file" > /mnt/shared/out/error.txt
+fi
+
+### END pipeline_script.sh
+
+### additions to .profile
+
+mount /mnt/shared
+date -Ins > /mnt/shared/out/output.txt
+netstat -tulpn >> /mnt/shared/out/output.txt
+export PATH=$PATH:/var/GeoMxNGSPipeline
+geomxngspipeline >> /mnt/shared/out/output.out
+# pipeline_script.sh could include a shutdown command
+if [[ -d /mnt/shared/fastq ]]; then
+  bash pipeline_script.sh
+fi
+
+### END .profile
+
+
+
+
+# next goal. run qemu from a docker image under singularity, and then run the server under qemu.
+salloc --partition=uoa-compute-priority --ntasks=1 --cpus-per-task=2 --mem=20G --x11=first
+srun --ntasks=1 --cpus-per-task=2 --pty /bin/bash # can't assume cpus-per-task is inherited
+hostname
+module load singularity/4.1.0
+#-vga qxl \ qemu-system-x86_64: QXL VGA not available. Perhaps you want to install qemu-system-modules-spice package?
+#-enable-kvm  \ Could not access KVM kernel module: No such file or directory qemu-system-x86_64: failed to initialize kvm: No such file or directory
+#-device AC97 # error initialising sound
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 --help | less
+
+# get ubuntu 20.04 server
+wget https://releases.ubuntu.com/focal/ubuntu-20.04.6-live-server-amd64.iso
+# create file
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f qcow2 ./ub2004svr_geomx.qcow2 20G
+# create some geomx dirs
+mkdir -p $SYS_SCRATCH/users/$USER/geomx/in
+mkdir -p $SYS_SCRATCH/users/$USER/geomx/out
+# build machine using sudo to accel with kvm
+# Q: how to get console interface to answer questions during installation
+SHARE_PATH=$SYS_SCRATCH/users/$USER/geomx
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot d -cdrom ./ubuntu-20.04.6-live-server-amd64.iso -net nic,model=virtio,name=net0 -netdev user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share
+# -netdev user,hostfwd=tcp::10022-:22 was -net user,hostfwd=tcp::10022-:22
+
+# do this on MobaXterm
+SHARE_PATH=$SYS_SCRATCH/users/$USER/geomx
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 -m 20G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot d -cdrom ./ubuntu-20.04.6-live-server-amd64.iso -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share &
+#VNC server running on 127.0.0.1:5900
+# failed attampts at getting a simple video screen:
+#-display curses,charset=UTF-8 -vga virtio # eventually comes to "640 x 480 ; not working
+#-display curses,charset=UTF-8 # eventually comes to "640 x 480 , not working
+#-display gtk # not avail without qemu-system-gui package
+## from https://serverfault.com/questions/471719/how-to-start-qemu-directly-in-the-console-not-in-curses-or-sdl
+#-nographic -serial mon:stdio -append 'console=ttyS0' # -append only allowed with -kernel option (not working)
+
+#
+# STEP 0. CREATE A VIRTUAL MACHINE, INSTALL UBUNTU 20.04
+#
+
+# qemu insists on running a vnc server on 127.0.0.1:5900
+# need a vnc client (see https://www.realvnc.com/en/connect/download/viewer/, get standalone linux version, save in this folder, change permissions)
+chmod +x VNC-Viewer-7.12.1-Linux-x64
+# to see the screen, invoke this with address on the node
+./VNC-Viewer-7.12.1-Linux-x64 127.0.0.1:5900 # works on maxlogin2, not on node vhmem002
+# works on mobaxterm (confirmed) and macleod2 ssh -X connection? compute node?
+
+# 20241114 due to crash during installation, redid making qcow2 file and installation
+# crashed twice (both times due to an assertion violation) while specifying 6 cpus and giving 2 real cpus (is this the reason?) and leaving vnc-viewer open at all times. specifying 2 cpus and mostly leaving vnc-viewer closed, the process was faster and successful (was this just fluke?)
+
+# process was as follows (need a less vulnerable x-server connection, so used ssh -X connection from macleod)
+ssh -X $USER@maxlogin2.abdn.ac.uk # from macleod2
+cd $MY_SCRATCH/qemu_dock_sing
+salloc --partition=uoa-compute-priority --ntasks=1 --cpus-per-task=2 --mem=20G --x11=first
+srun --ntasks=1 --cpus-per-task=2 --pty /bin/bash # can't assume cpus-per-task is inherited
+module load singularity/4.1.0
+SHARE_PATH=$SYS_SCRATCH/users/$USER/geomx
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f qcow2 ./ub2004svr_geomx.qcow2 20G
+#Formatting './ub2004svr_geomx.qcow2', fmt=qcow2 cluster_size=65536 extended_l2=off compression_type=zlib size=21474836480 lazy_refcounts=off refcount_bits=16
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 -m 20G -smp 2 -hda ./ub2004svr_geomx.qcow2 -boot d -cdrom ./ubuntu-20.04.6-live-server-amd64.iso -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share &
+#VNC server running on 127.0.0.1:5900
+./VNC-Viewer-7.12.1-Linux-x64 127.0.0.1:5900 # done using command prompt on same node with singularity running in background. done several times to check on the process and respond to queries, such as keyboard spec, etc.
+# after install complete, security updates were installed - a long process
+# at completion, virt shut down
+fg 1 # then ctrl-C
+# boot from qcow2 image file with no display. bind to SHARE_PATH. ssh to the virt to interact with it.
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 20G -smp 2 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+# after -boot c, old way to specify NIC and drives: -net nic,model=virtio,name=net0 -net user,hostfwd=tcp::10022-:22 -fsdev local,id=fsdev0,path=/home/lvande/geomx,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none
+#nmap 192.168.1.0/24 # probably shouldn't do this on cluster
+ssh -p 10022 geomx@127.0.0.1 # success
+
+#
+# STEP 1:  ADD USER MOUNTING OF host_share IN /etc/fstab
+#
+
+# on virt
+sudo mkdir /mnt/shared # for testing
+sudo mkdir /mnt/fastq # inserted here 20241118 for official pipeline function
+sudo mkdir /mnt/out # 20241118
+sudo vi /etc/fstab # 29241118, best if umask assigned. o/w only user is given full ctl. umask 4=r, 2=w, 1=x
+# umask 777 means all users on the virt are allowed rwx. singularity has another layer of control, limiting by the permissions of the person running the virt
+# added: host_share /mnt/shared 9p rw,user,sync,dirsync,relatime,access=client,trans=virtio,msize=10485760,umask=777 0 0
+# added 20241118: host_fastqdir /mnt/fastq 9p ro,user,sync,dirsync,relatime,access=client,trans=virtio,msize=10485760,umask=777 0 0
+# added 20241118: host_outdir /mnt/out 9p rw,user,sync,dirsync,relatime,access=client,trans=virtio,msize=10485760,umask=777 0 0
+mount /mnt/shared
+echo "test1" > /mnt/shared/in/test.txt # permission denied, even when sudo
+# to correct, on host: chmod a+w $SYS_SCRATCH/users/$USER/geomx/*, but still fails
+# to further correct, on host: chmod -R a+w $SYS_SCRATCH/users/$USER/geomx, after which success
+umount /mnt/shared
+# first time mounting successful, but got warning: qemu-system-x86_64: warning: 9p: degraded performance: a reasonable high msize should be chosen on client/guest side (chosen msize is <= 8192). See https://wiki.qemu.org/Documentation/9psetup#msize for details.
+# should add something like the following to fstab: ,msize=104857600
+uname -r # 5.4.0-200-generic; kernels >= 5.4 default <=8k msize (buffer size) for 9p mount type
+# future problem: files to be processed will be in a non-world-writable space.
+# solution: have a perpetually world-writable folder alongside the virt file and load thisas a temp folder.
+
+# after making HOST_SHARE not world-writable, reran same virt with -fsdev....security_model=passthroug, but couldn't add a file to the 'in' folder.
+
+#Q are virtiofsd running on the node (hmem011)
+# on host: netstat -lx | less
+# on host: ss -lx | less
+# conclude, not present.
+
+
+# 20241115
+#
+# STEP 2. CREATE A USER:GROUP THAT CAN WRITE TO A CGEBM FOLDER
+#
+
+# 1. to create an boss-like user
+sudo groupadd --gid 2000 cgebm # matching boss's main gid on hpc
+sudo groupadd --gid 1000 bioinformatics # matching my main gid
+sudo useradd --create-home --shell /bin/bash --no-user-group --comment "boss-like account" --gid cgebm --groups bioinformatics,adm,cdrom,sudo --uid 1001 boss # matching boss's uid on hpc; --shell bash added 20241118
+sudo passwd boss # password: geomx
+sudo vi /etc/fstab # set fstab mask as boss
+exit
+ssh -p 10022 boss@127.0.0.1 # relogin as boss
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab
+# touch /mnt/shared/in/temp.txt # permission denied - good,shared folder is in my personal scratch space, which boss doesn't have access to
+sudo useradd --create-home --shell /bin/bash --no-user-group --comment "me-like account" --gid bioinformatics --groups cgebm,adm,cdrom,sudo --uid 1002 $USER #  --shell bash added 20241118
+sudo passwd $USER # password: geomx
+sudo vi /etc/fstab # set fstab mask as $USER
+exit
+ssh -p 10022 $USER@127.0.0.1 # relogin as $USER
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab
+touch /mnt/shared/in/temp.txt # success
+exit
+ssh -p 10022 boss@127.0.0.1 # relogin as boss
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab
+# touch /mnt/shared/in/temp2.txt # permission denied, in spite of fstab masked as $USER
+sudo vi /etc/fstab # remove uid,gid, keep umask to retry as $USER
+exit
+ssh -p 10022 $USER@127.0.0.1 # relogin as $USER
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab
+touch /mnt/shared/in/temp2.txt # success, even without uid,gid specified in fstab
+# shared folder is writable by same-group accounts, so add boss to bioinformatics and $USER in cgebm group
+#sudo usermod --append --groups bioinformatics boss # takes effect immed
+#sudo usermod --append --groups cgebm $USER # takes effect after logging out and in again
+# shared folder $SYS_SCRATCH/users/$USER/geomx is writeable by group mems. boss should now be able to write.
+exit
+ssh -p 10022 boss@127.0.0.1
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab
+#drwxrwxr-x 2 $USER bioinformatics 5 Nov 15 09:40 in
+#drwxrwxr-x 2 $USER bioinformatics 0 Nov 13 17:40 out
+groups
+#cgebm adm cdrom sudo bioinformatics
+touch /mnt/shared/in/temp3.txt # success creating file, but permission denied when setting times. also, owner is $USER
+echo "test4" > /mnt/shared/in/test4.txt # success, though owner is $USER
+ls -l /mnt/shared/in # owner of temp3.txt and test4.txt is $USER, permissions are -rw-r--r-- (0644)
+exit
+fg 1
+#ctrl-C - shut down the virt
+
+# test creating writing to a folder in the cgebm scratch space
+stat $SYS_SCRATCH/shared/cgebm # owned by boss:CLSM-CGEBM-Bioinf... access is drwxrws--x (2771)
+SHARE_PATH=$SYS_SCRATCH/shared/cgebm # in group
+pwd # $MY_SCRATCH/qemu_dock_sing
+# run again - note, virt file must be in dirs bound by singularity
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 20G -smp 2 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+ssh -p 10022 boss@127.0.0.1
+ls -l /mnt/shared # shared folder already mounted from /etc/fstab is cgebm scratch space. good.
+echo "testing virtual machine rw capacity" > /mnt/shared/00test.txt # success
+ls -l /mnt/shared/00test.txt # present with 0644 permissions owned by $USER.cgebm
+rm /mnt/shared/00test.txt # rm: remove write-protected regular file?
+# virt seems to be acting internally as boss, but files created as $USER (owner of the external singularity process?)
+exit
+ssh -p 10022 geomx@127.0.0.1 # geomx has nice colours and a command history - more convenient.
+# aside: check connection to host_share
+ls /mnt/shared/ -l # permission denied
+mount /mnt/shared # already mounted
+umount /mnt/shared # failed, not permitted
+su boss
+ls /mnt/shared # success
+exit # back to geomx account
+sudo shutdown -h now
+
+#
+# STEP 3. INSTALL GEOMX PIPELINE FILES
+#
+
+mkdir ~/cgebm/GeoMxNGSPipeline_download # from support email, GeoMxNGSPipeline_Linux_3.1.1.8.zip was obtained from https://nanostring.box.com/s/wmk2k958g2zdi719phsu5tmek87p8z1o
+mv ~/geomx_ngs_pipeline/GeoMxNGSPipeline/GeoMxNGSPipeline_Linux_3.1.1.8.zip ~/cgebm/GeoMxNGSPipeline_download
+(cd ~/cgebm/GeoMxNGSPipeline_download && unzip GeoMxNGSPipeline_Linux_3.1.1.8.zip)
+
+# run again - note, virt file must be in dirs bound by singularity
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 20G -smp 2 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+ssh -p 10022 boss@127.0.0.1
+cd /mnt/shared/GeoMxNGSPipeline_download
+sudo ./GeoMxNGSPipeline_Linux_3.1.1.8.sh # unable to execute, permission denied. (bc owned by $USER?)
+exit
+ssh -p 10022 $USER@127.0.0.1
+cd /mnt/shared/GeoMxNGSPipeline_download
+sudo ./GeoMxNGSPipeline_Linux_3.1.1.8.sh # unable to execute, permission denied again. Hmmm
+cp *.tgz *.sh ~
+cd
+sudo ./GeoMxNGSPipeline_Linux_3.1.1.8.sh # port 5000
+#Created symlink /etc/systemd/system/multi-user.target.wants/GeoMxNGSPipeline.service → /etc/systemd/system/GeoMxNGSPipeline.service.
+#Installation completed successfully.
+sudo netstat -tulpn # not present. install net-tools
+sudo apt install net-tools
+sudo netstat -tulpn # 1268/GeoMxNGSPipeli... listening on port 5000; sshd on port 22
+rm -i GeoMx* # remove installation files
+sudo vi /var/GeoMxNGSPipeline/runtimesettings.xml
+# added: <folder path="/mnt/shared" name="shared"/>
+export PATH=$PATH:/var/GeoMxNGSPipeline # temporary path alteration
+geomxngspipeline # scroll through eula, type y to accept
+# Processing usage: geomxngspipeline --in=INPUT_DIR_PATH --out=OUTPUT_DIR_PATH --ini=INI_CONFIG_PATH [OPTIONS]
+# Example: geomxngspipeline  --in=/mnt/efs/project1/FASTQ --out=/mnt/efs/project1/results --ini=/mnt/efs/project1/project1_config.ini --save-interim-files=true --threads=4
+
+# some options:
+# --threads=4 # number of simultaneously processed samples (1 thread = 1 sample). increase RAM consumption. Number of threads should not be more than the number of available cores or the amount of  available RAM (2-8 GB free per thread depending on file size). Default 4.
+# --translation-file=/mnt/efs/project1/translation.csv 	a path to the translation file in csv format. Default none.
+# --print-barcodes-stats=false  prints additional information about matching per barcode - total number of matches per barcode hd0/1, total, unique (UMI). Default false.
+# --save-sample-counts=false  creates a counts.tsv file that contains pre-dedup and after-dedup read counts per AOI. Default false
+# --dcc-metadata=false creates a dcc-metadata.csv file with an additional information about dcc and fastq files (e.g. size, md5 hash, etc.). Default false.
+# --use-max-threads=false  use all available CPU cores. Ignore --threads parameter value set both from CLI and .ini file.
+# --project=PROJECT_NAME  project name. If specified, all output will be placed into a directory named PROJECT_NAME inside of the main output directory.
+sudo shutdown -h now
+
+#
+# STEP 4. ANALYSE A TEST DATASET MANUALLY
+#
+
+# on host:
+mkdir ~/cgebm/GeoMxNGSPipeline_TestData
+mv ~/geomx_ngs_pipeline/data ~/cgebm/GeoMxNGSPipeline_TestData/fastq # move some pre-downloaded fastq files
+du -sh ~/cgebm/GeoMxNGSPipeline_TestData/fastq # 12 files, 197M
+# link to one of the dcc files from ncbi geo: https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSM5657167&format=file&file=GSM5657167%5FDSP%2D1010910372679%2DA%2DC02%2Edcc%2Egz
+# see https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM5657167
+# which is part of https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE186594
+# Material: FxF(?) mouse E13.5 embryo
+# Library strategy: GeoMx Seq
+# GeoMx NGS Pipeline v2.3.3.10 with the following parameters: quality-trim-score = 20, 2color-trimming = True, adapter1 = AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC, adapter2 = AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT, adapter-trim-match-length = 10, adapter-trim-max-mismatch = 3, barcode-max-mismatch = 1, stitching-max-mismatch = 2
+less ~/cgebm/GeoMxNGSPipeline_TestData/fastq/DSP-1010910372679-A-C02_S1_L001_R1_001.fastq.gz 
+less ~/cgebm/GeoMxNGSPipeline_TestData/fastq/DSP-1010910372679-A-C02_S1_L001_R2_001.fastq.gz # both files 27b barcodes(?)
+# required ini file is like the one in L:\CLSM\CGEBM\NGS Wet Lab\CGEBM Projects\CGEBMP427A Jenna GeoMx NOV23\GeoMx files for sequencing\TargetTMA_1_20231122T2208_forward\TargetTMA_20231122T2208_GNP_config.ini
+vi $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/project_config.ini
+#This file contains 4 sections
+#[Sequencing] - seq plaform, read length, lib prep method
+#[Processing_v2] - some params provided to the ngs pipeline
+#[AOI_List] - a file prefix matched to AOI metadata?
+#[Targets] - a list of RTSnnnnnnn = ACGTACGTACGT pairs, one per mRNA target. These seqs should be found in read2 (read1s contain sample barcodes and possibly UMIs)
+# since the test data were presumably for the same target sequences, this section of Jenna's TargetTMA_...ini file was copied over
+
+SHARE_PATH=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 20G -smp 2 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+ssh -p 10022 $USER@127.0.0.1
+ls -l /mnt/shared # drwxr-xr-x 2 $USER bioinformatics 13 Aug 27 16:18 fastq
+netstat -tulpn # a process is listening on port 5000
+export PATH=$PATH:/var/GeoMxNGSPipeline # path to geomxngspipeline
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/project_config.ini --use-max-threads=true
+# looks like this failed on ram requirements - redone, allocating 6 cpus & 100G at salloc
+# with larger mem, same problem. Is downloaded dataset incompatible?
+# Gregory's dataset done instead after symlinking to it: (cd ~/cgebm/GeoMxNGSPipeline_TestData/ && ln -s $HOME/cgebm/BaseSpaceQC/CGEBMS459_CGEBMP427A/merged/ merged) # BUT VIRT DOESN'T KNOW THE LOCATION POINTED TO.
+# redo after putting TargetTMA_20231122T2208_GNP_config.ini in $HOME/cgebm/BaseSpaceQC/CGEBMS459_CGEBMP427A/
+
+# to process P427 (not writable to me) need at least 2 shares (source & dest)
+# instead, move some Gregory files to fastq dir
+# on host:
+# mv $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/fastq $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/GSE186594
+# mkdir $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/fastq
+# cp -a $HOME/cgebm/BaseSpaceQC/CGEBMS459_CGEBMP427A/merged/*4-H-A*.fq.gz $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/fastq
+# (cd $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/ && cp TargetTMA_20231122T2208_GNP_config.ini gregory_subset.ini && vi gregory_subset.ini)
+# now start virt with 100G and 2 processors
+ls -l /mnt/shared/fastq # ok
+netstat -tulpn # ok
+export PATH=$PATH:/var/GeoMxNGSPipeline
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --use-max-threads=true
+# problem with DND2.Lib.Fastq.FastqProcessor.ValidateIlluminaNaming (guess shouldn't use merged files?)
+# on host: rm $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/fastq/*.gz; cp $HOME/cgebm/BaseSpaceQC/CGEBMS459_CGEBMP427A/fastq/*4-H-A* $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/fastq
+# rerun
+# complaint about max-threads, and request for interactively choosing 2 threads.
+# NOTE: illumina files have to be un-merged, need enough ram per cpu
+# pipeline looks at largest samples and makes a prediction of how much RAM will be needed.
+# here, largest samples have 4.9M and 3.7M reads, predicting to need 6.2G and 4.7G
+# successfully done in 658s with 2 processors
+# retry after restarting virt with 60G and 6 cpus
+sudo shutdown -h now
+
+SHARE_PATH=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 60G -smp 6 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+ssh -p 10022 $USER@127.0.0.1
+ls -l /mnt/shared # share is mounted
+netstat -tulpn # a process is listening on port 5000
+export PATH=$PATH:/var/GeoMxNGSPipeline # path to geomxngspipeline
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --threads=6 # again asks for interaction because a number of threads differing from the config has been specified; options: 1) ignore and proceed with 4 cpus as in config; 2) optimise to 6 to use all available; 3) exit. try not specifying
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini # again asks for interaction because number of threads differs between config and 'recommended' number. options: 1) proceed with 4 cpus as in config; 2) change to recommended 6 cpus; 3) exit
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --threads=4 # options: 1) proceed with 4 as in config; 2) optimise to 6 recommended, presumably because available; 3) exit.
+# options seem to be presented at all times. option 2 seems to be always use available.
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --use-max-threads=true # options presented in this case too
+echo "2" > input.txt
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --use-max-threads=true < input.txt # 'yes 2 |' fails; printf '2' | fails;  < input.txt dumps core
+# tried setting 6 in ini file and then this...
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini # core dump
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --use-max-threads=true # here ini file agrees with available. No options presented (3 sources of cpu values: 1) known max; 2) ini file, 3) cli options) if all agree, no questions asked. ini file by default says 4. if we are not going to change that, we should by default request 4 cpus from the scheduler and use max threads in the pipeline.
+# edit ini file to 4 cpus, give 4 cpus to virt and rerun
+sudo shutdown -h now
+
+vi $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/gregory_subset.ini # on host, set 4 cpus
+SHARE_PATH=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw --bind $SHARE_PATH:$SHARE_PATH:rw qemu.sif qemu-system-x86_64 -m 40G -smp 4 -hda ./ub2004svr_geomx.qcow2 -boot c -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 -fsdev local,id=fsdev0,path=$SHARE_PATH,security_model=none -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_share -display none &
+ssh -p 10022 $USER@127.0.0.1
+ls -l /mnt/shared # share is mounted
+netstat -tulpn # a process is listening on port 5000
+export PATH=$PATH:/var/GeoMxNGSPipeline # path to geomxngspipeline
+geomxngspipeline --in=/mnt/shared/fastq --out=/mnt/shared/out --ini=/mnt/shared/gregory_subset.ini --use-max-threads=true # here ini file agrees with available. 3 sources of cpu values agree: 1) known max; 2) ini file, 3) cli options. again, no questions asked.
+sudo shutdown -h now
+
+
+# do all cpu/mem combos produce the same dcc files?
+md5sum $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out_2cpu_100G/*.dcc
+md5sum $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out_6cpu_60G/*.dcc
+md5sum $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out $SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/out_4cpu_40G/*.dcc
+# all md5s identical
+
+
+# next steps
+# 0. enable writing to different location from input - mount 2+ shares.
+# 1. set up auto login
+# 2. install the .profile script for the auto login user to wait till port 5000 is being listened to, read indication of host_share_in and host_share_out, run the pipeline, generate a file at the end to indicate completion
+# 3. set up the firewall to let in ssh connections only
+# 4. run pipeline without port forwarding to ssh port.
+
+# 20241118 reanalyse the dataset using multiple shares
+#SHARE_PATH=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData
+salloc --partition=uoa-compute-priority --ntasks=1 --cpus-per-task=4 --mem=40G --x11=first
+srun --ntasks=1 --cpus-per-task=4 --pty /bin/bash
+module load singularity/4.1.0
+FASTQ_PATH=/uoa/home/$USER/cgebm/BaseSpaceQC/CGEBMS459_CGEBMP427A/fastq # must not contain symlinks
+CONFIG_FILE=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/gregory_subset.ini # 4 cpus
+CONFIG_FILE=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/TargetTMA_20231122T2208_GNP_config.ini
+OUT_PATH=$SYS_SCRATCH/shared/cgebm/GeoMxNGSPipeline_TestData/CGEBMP427A_DCC # assume existing
+mkdir -p $OUT_PATH # assume this dir is nonexistent or empty
+chgrp CLSM-CGEBM-BioinformaticsUnit $OUT_PATH # aka 2749, known by the virt, all cgebm ppl are members, but always as a secondary group.
+chmod g+w $OUT_PATH
+FASTQ_PATH=$(realpath $FASTQ_PATH)
+CONFIG_FILE=$(realpath $CONFIG_FILE)
+OUT_PATH=$(realpath $OUT_PATH)
+
+# copy config file to empty out dir
+NFILES=$(ls -1 $OUT_PATH | wc -l) # test this is 0
+if (( NFILES > 0 )); then
+  echo "Error: non-empty destination dir $OUT_PATH" > $OUT_PATH/error.txt
+  exit 1
+fi
+cp -a $CONFIG_FILE $OUT_PATH
+
+# determine number of processors and mem required from config file (10G/thread)
+THREADS=$(grep ^threads $CONFIG_FILE | cut -f 3 -d " ")
+THREADSMEM=$THREADS"0G"
+
+singularity exec --no-home \
+  --bind $HOME:$HOME:rw \
+  --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw \
+  --bind $FASTQ_PATH:$FASTQ_PATH:ro \
+  --bind $OUT_PATH:$OUT_PATH:rw \
+  qemu.sif qemu-system-x86_64 -m $THREADSMEM -smp $THREADS -hda ./ub2004svr_geomx.qcow2 -boot c \
+  -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 \
+  -fsdev local,id=fsdev0,security_model=none,path=$FASTQ_PATH \
+  -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_fastqdir \
+  -fsdev local,id=fsdev2,security_model=none,path=$OUT_PATH \
+  -device virtio-9p-pci,id=fs2,fsdev=fsdev2,mount_tag=host_outdir -display none &
+ssh -p 10022 boss@127.0.0.1
+ls -l /mnt/* # shares are mounted
+netstat -tulpn # a process is listening on port 5000
+export PATH=$PATH:/var/GeoMxNGSPipeline # path to geomxngspipeline
+INI_COUNT=$(ls -1 /mnt/out/*.ini | wc -l) # count ini files
+if (( INI_COUNT > 1 )); then
+  echo "Error: more than one config ini file in destination dir" > /mnt/out/error.txt
+  exit 1
+elif (( INI_COUNT == 0 )); then
+  echo "Error: no config ini file found in destination dir" > /mnt/out/error.txt
+  exit 1
+fi
+# note, numeric context with (()) does not work in /bin/sh
+INI_FILE=$(ls -1 /mnt/out/*.ini) # should only be one file
+# run pipeline
+geomxngspipeline --in=/mnt/fastq --out=/mnt/out --ini=$INI_FILE --use-max-threads=true # here ini file agrees with available. 3 sources of cpu values agree: 1) known max; 2) ini file, 3) cli options. again, no questions asked.
+mv ~/*.log /mnt/out
+# success using multiple host shares
+
+
+#
+# STEP 5: SET UP AUTO LOGIN ON ACCOUNT boss
+#
+
+# still logged into running virt
+# while virt up & ssh-connected, set server to auto-login (see https://ostechnix.com/ubuntu-automatic-login/)
+# autologin ensures user's .profile script is run - run the pipeline from here
+# on virt:
+sudo vi /etc/systemd/logind.conf
+# uncommented: NAutoVTs=1 # allocates 1 tty
+# uncommented: ReserveVT=1 # unconditionally reserve tty1
+sudo mkdir /etc/systemd/system/getty@tty1.service.d/ # make a dir to indicate autologin to systemd
+sudo vi /etc/systemd/system/getty@tty1.service.d/override.conf
+# added 4 lines: 1) service 2) command to run [none, reset list of commands] 3) command to run [agetty opens a tty port, invokes /bin/login; noissue prevents display of /etc/issue before prompt] 4) wait till system is idle to start the service
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --noissue --autologin boss %I $TERM
+Type=idle
+# the '-' before the agetty command: from https://unix.stackexchange.com/questions/213192/what-does-it-mean-to-have-a-minus-sign-as-the-first-character-of-a-command-in-ht it indicates a login shell
+
+
+#
+# STEP 6: CREATE .profile FOR boss TO RUN THE PIPELINE
+#
+
+# still logged into running virt
+vi ~/.profile # note, this file is not read by bash(1), if ~/.bash_profile or ~/.bash_login exists. neither of these exists, so this is ok.
+
+### BEGIN ADDED CODE ###
+
+export PATH=$PATH:/var/GeoMxNGSPipeline
+
+# indicate start date/time
+date -Ins > ~/output.log
+
+# wait till geomx pipeline service is listening on port 5000
+LISTENING=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+while (( LISTENING  == 0 )) ; do
+  echo 'no listening on port 5000, waiting 2s' >> ~/output.log
+  sleep 2
+  LISTENING=$(netstat -tuln | egrep "^tcp..*0.0.0.0:5000" | wc -l)
+done
+echo "found process listening on port 5000, $(date -Ins)" >> ~/output.log
+
+# check for single ini file
+INI_COUNT=$(ls -1 /mnt/out/*.ini | wc -l) # count ini files
+if (( INI_COUNT > 1 )); then
+  echo "Error: more than one config ini file in destination dir" > /mnt/out/error.txt
+  exit 1
+elif (( INI_COUNT == 0 )); then
+  echo "Error: no config ini file found in destination dir" > /mnt/out/error.txt
+  exit 1
+fi
+# note, numeric context with (()) does not work in /bin/sh
+INI_FILE=$(ls -1 /mnt/out/*.ini) # should only be one file
+echo "found project config ini file $INI_FILE" >> ~/output.log
+
+# check for DSP-*.fastq.gz or DSP-*.fq.gz sequencing files
+FASTQ_COUNT=$(ls -1 /mnt/fastq/DSP-*.f*q.gz | wc -l)
+if (( FASTQ_COUNT == 0 )); then
+  echo "Error: no sequencing files ( DSP-*.f*q.gz) found in fastq dir" > /mnt/out/error.txt
+  exit 1
+fi
+
+# num cpus have been checked: max cpus == config cpus == requested cpus; when this is true, geomxngspipeline runs without requesting user input
+# run pipeline process
+geomxngspipeline --in=/mnt/fastq --out=/mnt/out --ini=$INI_FILE --use-max-threads=true
+
+# clean up
+#mv ~/*.log /mnt/out # this took a very long time
+echo "\n\n####################\n\nLOGS\n\n ####################\n\n" >> ~/output.log
+cat ~/*.log >> ~/output.log
+date -Ins >> ~/output.log
+cp -a ~/output.log /mnt/out # copying out looks like it goes fairly quickly, but repetitive short addtions to a file result in sleeping, perhaps due to buffer size?
+rm ~/*.log
+touch /mnt/out/finished.txt
+# for gregory_subset.ini, took ~12 min clock time
+
+### END ADDED CODE ###
+
+# still logged into running virt
+sudo shutdown -h now
+
+# on host, remove results of running pipeline and rerun ~automated using previously defined env. for now, keep ssh port forwarding for debugging
+rm $OUT_PATH/*.*
+cp -a $CONFIG_FILE $OUT_PATH
+singularity exec --no-home \
+  --bind $HOME:$HOME:rw \
+  --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw \
+  --bind $FASTQ_PATH:$FASTQ_PATH:ro \
+  --bind $OUT_PATH:$OUT_PATH:rw \
+  qemu.sif qemu-system-x86_64 -m $THREADSMEM -smp $THREADS -hda ./ub2004svr_geomx.qcow2 -boot c \
+  -netdev user,id=n1,hostfwd=tcp::10022-:22 -device virtio-net-pci,netdev=n1 \
+  -fsdev local,id=fsdev0,security_model=none,path=$FASTQ_PATH \
+  -device virtio-9p-pci,id=fs0,fsdev=fsdev0,mount_tag=host_fastqdir \
+  -fsdev local,id=fsdev2,security_model=none,path=$OUT_PATH \
+  -device virtio-9p-pci,id=fs2,fsdev=fsdev2,mount_tag=host_outdir -display none &
+# for debugging: ssh -p 10022 $USER@127.0.0.1 # avoid spawning new pipeline proc, don't use boss
+
+# run a while loop looking for the finished.txt file
+FIN_COUNT=$(ls -1 $OUT_PATH | grep -c finished.txt)
+while (( FIN_COUNT == 0 )); do
+  echo "not finished"
+  sleep 60
+  FIN_COUNT=$(ls -1 $OUT_PATH | grep -c finished.txt)
+done; echo "finished"
+
+# success with gregory_subset.ini
+
+
+# note, machine will have firewall blocking all ingress, so password shouldn't be necessary
+# also, boss should be the account used for running pipeline
+
+
+

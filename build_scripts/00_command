@@ -1,0 +1,120 @@
+
+
+# 20241030 start by downloading docker into singularity
+module spider apptainer
+module spider singularity
+
+vi Singularity
+
+!salloc
+!srun
+module load singularity/4.1.0
+singularity --verbose build qemu.sif Singularity # fails. no proot
+singularity --verbose build --fakeroot qemu.sif Singularity # fails. no fakeroot
+# can't use a def file to build. try downloading instead.
+singularity --verbose build qemu.sif docker://qemux/qemu-docker:6.06 # success w/o root
+singularity run qemu.sif # must be executed with root privs
+singularity run --bind $HOME:$HOME:rw,$(pwd):$(pwd):rw,/run,$SYS_SCRATCH:$SYS_SCRATCH:rw --pwd $(pwd) --home $HOME --env DISPLAY=$DISPLAY qemu.sif # FATAL tini (2212554)] exec /run/entry.sh failed: No such file or directory
+
+# try using to create a 5G file in home dir
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f qcow2 $HOME/myVirtualDisk.qcow2 5G # worked
+rm ~/myVirtualDisk.qcow2
+
+# redo with a 20G file in current dir
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-img create -f vdi $SYS_SCRATCH/users/$USER/qemu_dock_sing/test.vdi 20G # worked
+rm test.vdi
+
+# qemu also can use vdi files. copy ubuntu 20.04 vdi here.
+# from https://www.baeldung.com/linux/qemu-from-terminal, run
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+-device virtio-net-pci,netdev=net0 & # gets a vnc server running on 127.0.0.1
+
+# add in forwarding to a ssh port on the device.
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9,hostfwd=tcp::44788-:22  \
+-device virtio-net-pci,netdev=net0 & # gets a vnc server running on 127.0.0.1 but no response to ssh geomx@127.0.0.1 -p 44788
+
+
+# some further manglings
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.vdi                                     \
+-device e1000,netdev=net0 -netdev user,id=net0,hostfwd=tcp::44788-:22 \
+-display none &
+
+ssh geomx@localhost -p 44788
+
+# device stuff from https://unix.stackexchange.com/questions/124681/how-to-ssh-from-host-to-guest-using-qemu
+#-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+#-device virtio-net-pci,netdev=net0 \
+#-nographic \
+
+# don't boot first cd device with a distro iso
+#-boot d                                                        \
+#-cdrom linuxmint-21.1-cinnamon-64bit.iso                       \
+
+# remove -vga due to qemu-system-x86_64: QXL VGA not available. Perhaps you want to install qemu-system-modules-spice package?
+# this vdi was a server, after all
+#-vga qxl                                                       \
+
+# do not enablew kvm due to Could not access KVM kernel module: No such file or directory
+#-enable-kvm                                                    \
+
+# lost os errors due to missing sound card. remove
+#-device AC97                                                   \
+
+# with -nographic, get a console that says it's booting, but no further
+# then it apparently freezes
+# rather than ubuntu, it seems to be SeaBIOS (version 1.16.3-debian-1.16.3-2)
+
+
+# back to basics. get a bash console on the singularity image (the host): Q: does a process running on the singularity image access all the ports of the machine, or only those of the singularity image? Do I need more singularity ooptions?
+
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif bash
+Singularity> /usr/bin/qemu-system-x86_64 --help
+
+During emulation, the following keys are useful:
+ctrl-alt-f      toggle full screen
+ctrl-alt-n      switch to virtual console 'n'
+ctrl-alt-g      toggle mouse and keyboard grab
+
+# idea: get Ubuntu 20.04 LTS desktop image.
+
+wget https://releases.ubuntu.com/focal/ubuntu-20.04.6-desktop-amd64.iso
+singularity exec --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif \
+qemu-img create -f qcow2 ubuntu_2004_geomx.qcow2 20G
+
+singularity exec --env DISPLAY=$DISPLAY --no-home --bind $HOME:$HOME:rw \
+--bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif \
+qemu-system-x86_64 \
+-vga std \
+-m 4G                                                          \
+-smp 2                                                         \
+-hda ubuntu_2004_geomx.qcow2                                   \
+-boot d                                                        \
+-cdrom ubuntu-20.04.6-desktop-amd64.iso                        \
+-netdev user,id=net0,net=192.168.0.0/24,dhcpstart=192.168.0.9  \
+-device virtio-net-pci,netdev=net0
+
+#-vga qxl \ qemu-system-x86_64: QXL VGA not available. Perhaps you want to install qemu-system-modules-spice package?
+#-enable-kvm  \ Could not access KVM kernel module: No such file or directory qemu-system-x86_64: failed to initialize kvm: No such file or directory
+#-device AiC97 # error initialising sound
+singularity exec --no-home --bind $HOME:$HOME:rw --bind $SYS_SCRATCH/users/$USER:$SYS_SCRATCH/users/$USER:rw qemu.sif qemu-system-x86_64 --help | less
+
+# doing the above with -vga std only runs a vnc server even under MobaXterm (which has a good X server)
+# is this a problem with using this qemu from a docker image? Would this work on a linux machine with admin access?
+
+
