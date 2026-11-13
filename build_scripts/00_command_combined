@@ -1,3 +1,5 @@
+# Copyright (C) 2026 University of Aberdeen
+
 # series of commands used to build and run a qemu virtual machine running GeoMxNGSPipeline service as well as the client process that creates DCC files from sequenced transcript barcodes in fastq files
 # key successes in this process marked by ### SUCCESS
 

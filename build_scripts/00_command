@@ -1,4 +1,4 @@
-
+# Copyright (C) 2026 University of Aberdeen
 
 # 20241030 start by downloading docker into singularity
 module spider apptainer
